@@ -23,7 +23,7 @@ typedef struct
 /* LRU CACHE */
 typedef struct
 {
-    int used; //usage to calculate LRU
+    int used; 
     char url_key[MAXLINE];
     char content[MAX_OBJECT_SIZE];
 } cache_t;
@@ -39,12 +39,21 @@ typedef struct
     int wait;
 } rwlock_t;
 
+typedef struct{
+    sem_t mutex;
+    sem_t w;
+    int read_cnt;
+} rw_t;
+
+
+static rw_t rw;
 static rwlock_t rwlock;          /* global read and write lock for access CACHE */
 static cache_t Cache[MAX_CACHE]; /* global CACHE */
-int LRUptr = 0;
+int LRUptr;
 
 void parse_url(char *URL, url_t *url); /* parse the URL and store the info in url*/
 void doit(int connfd);                 /* perform the proxy service and call the cache service*/
+void init_rw();
 void init_rwlock();                    /* initialize the global read/write lock */
 void init_cache();                     /* initialize the global cache */
 int rcache(int connfd, char *url);     /* return 1 if there is content in cache */
@@ -66,7 +75,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(1);
     }
-
+    init_rw();
     init_rwlock();
     init_cache();
     listenfd = Open_listenfd(argv[1]);
@@ -111,7 +120,6 @@ void doit(int fd)
     if (!Rio_readlineb(&rio, buf, MAXLINE))
         return;
 
-    //printf("%s", buf);
     sscanf(buf, "%s %s %s", method, url, version);
     strcpy(url_copy, url);
 
@@ -124,8 +132,11 @@ void doit(int fd)
     }
 
     /* get the content from cache */
-    if (rcache(fd, url_copy) == 1)
+    int x;
+    if ((x=rcache(fd, url_copy)) == 1){
+        printf("cache: %d\n", x);
         return;
+    }
 
     /* parse and adjust URL from clients */
     parse_url(url_copy, &u);
@@ -138,7 +149,7 @@ void doit(int fd)
 
     /* try to cache the received data from server and return them to the client*/
     char cachebuf[MAX_OBJECT_SIZE];
-    int n;     //for every rio read
+    size_t n;     //for every rio read
     int total; //the total number of reading bytes
     while ((n = Rio_readlineb(&serve_rio, buf, MAXLINE)) != 0)
     {
@@ -197,36 +208,66 @@ void parse_url(char *URL, url_t *url)
     return;
 }
 
-void adjust_request(url_t *u, char *modified_http, rio_t *rio)
-{
-    char request[MAXLINE], buf[MAXLINE], host[MAXLINE], endings[MAXLINE];
-    sprintf(request, "GET %s HTTP/1.0\r\n", u->file);
-    //continue getting the request headers, which terminates with a "\r\n"
-    while (Rio_readlineb(rio, buf, MAXLINE) != 0)
-    {
-        if (strcmp(buf, "\r\n") == 0)
-        {
+void adjust_request(url_t* u, char* new_httpdata, rio_t* rio){
+    static const char* Con_hdr = "Connection: close\r\n";
+    static const char* Pcon_hdr = "Proxy-Connection: close\r\n";
+    char buf[MAXLINE];
+    char Reqline[MAXLINE], host[MAXLINE], endings[MAXLINE]; 
+    sprintf(Reqline, "GET %s HTTP/1.0\r\n", u->file);   
+    while (Rio_readlineb(rio, buf, MAXLINE) > 0){
+        if (strcmp(buf, "\r\n") == 0){
             strcat(endings, "\r\n");
-            break;
+            break;          
         }
-        if (strncasecmp(buf, "host:", 5) == 0)
+        else if (strncasecmp(buf, "Host:", 5) == 0){
             strcpy(host, buf);
-        if (!strncasecmp(buf, "Connection:", 11) && !strncasecmp(buf, "Proxy_Connection:", 17) && !strncasecmp(buf, "User-agent:", 11))
+        }
+        
+        else if (!strncasecmp(buf, "Connection:", 11) && !strncasecmp(buf, "Proxy_Connection:", 17) &&!strncasecmp(buf, "User-agent:", 11)){
             strcat(endings, buf);
+        }
     }
-    if (strlen(host) == 0)
-        strcpy(host, u->host);
-    sprintf(modified_http, "%S%S%S%S%S%S", request, host, user_agent_hdr, conn_close, proxy_conn_close, endings);
+    if (!strlen(host)){
+        sprintf(host, "Host: %s\r\n", u->host); 
+    }
+    
+    sprintf(new_httpdata, "%s%s%s%s%s%s", Reqline, host, conn_close, proxy_conn_close, user_agent_hdr, endings);
     return;
 }
 
+
 int rcache(int connfd, char *url)
 {
-    sem_wait(&rwlock.in);
-    rwlock.in_cnt++;
-    sem_post(&rwlock.in);
+    // sem_wait(&rwlock.in);
+    // rwlock.in_cnt++;
+    // sem_post(&rwlock.in);
 
-    //critical section: find the content in cache
+    // //critical section: find the content in cache
+    // int found = 0;
+    // for (int i = 0; i < MAX_CACHE; ++i)
+    // {
+    //     if (strcmp(url, Cache[i].url_key) == 0)
+    //     {
+    //         found = 1;
+    //         Rio_writen(connfd, Cache[i].content, strlen(Cache[i].content));
+    //         printf("proxy send %d bytes to client from cache.\n", strlen(Cache[i].content));
+    //         Cache[i].used = 1;
+    //         break;
+    //     }
+    // }
+    // sem_wait(&rwlock.out);
+    // rwlock.out_cnt++;
+    // if (rwlock.wait == 1 && rwlock.in_cnt == rwlock.out_cnt)
+    //     sem_post(&rwlock.wlock);
+    // sem_post(&rwlock.out);
+    // return found;
+
+
+    
+    sem_wait(&rw.mutex);
+    if (rw.read_cnt==0) sem_wait(&rw.w);
+    rw.read_cnt++;
+    sem_post(&rw.mutex);
     int found = 0;
     for (int i = 0; i < MAX_CACHE; ++i)
     {
@@ -239,38 +280,53 @@ int rcache(int connfd, char *url)
             break;
         }
     }
-    sem_wait(&rwlock.out);
-    rwlock.out_cnt++;
-    if (rwlock.wait == 1 && rwlock.in_cnt == rwlock.out_cnt)
-        sem_post(&rwlock.wlock);
-    sem_post(&rwlock.out);
+    sem_wait(&rw.mutex);
+    rw.read_cnt--;
+    if (rw.read_cnt==0) sem_post(&rw.w);
+    sem_post(&rw.mutex);
     return found;
 }
 
 void wcache(char *buf, char *url)
 {
-    sem_wait(&rwlock.in);
-    sem_post(&rwlock.out);
-    if (rwlock.in_cnt == rwlock.out_cnt)
-        sem_post(&rwlock.out);
-    else
-    {
-        rwlock.wait = 1;
-        sem_post(&rwlock.out);
-        sem_wait(&rwlock.wlock);
-        rwlock.wait = 0;
-    }
-    //critical section: write the content to the LRU CACHE
+    // sem_wait(&rwlock.in);
+    // sem_post(&rwlock.out);
+    // if (rwlock.in_cnt == rwlock.out_cnt)
+    //     sem_post(&rwlock.out);
+    // else
+    // {
+    //     rwlock.wait = 1;
+    //     sem_post(&rwlock.out);
+    //     sem_wait(&rwlock.wlock);
+    //     rwlock.wait = 0;
+    // }
+    // //critical section: write the content to the LRU CACHE
+    // while (Cache[LRUptr].used != 0)
+    // {
+    //     Cache[LRUptr].used = 0;
+    //     LRUptr = (LRUptr + 1) % MAX_CACHE;
+    // }
+    // int target = LRUptr;
+    // Cache[target].used = 1;
+    // strcpy(Cache[target].url_key, url);
+    // strcpy(Cache[target].content, buf);
+    // sem_post(&rwlock.in);
+    // return;
+
+    sem_wait(&rw.w);
     while (Cache[LRUptr].used != 0)
     {
         Cache[LRUptr].used = 0;
         LRUptr = (LRUptr + 1) % MAX_CACHE;
     }
     int target = LRUptr;
+    Cache[target].used = 1;
     strcpy(Cache[target].url_key, url);
     strcpy(Cache[target].content, buf);
-    sem_post(&rwlock.in);
+
+    sem_post(&rw.w);
     return;
+
 }
 
 void init_rwlock()
@@ -290,4 +346,10 @@ void init_cache()
     {
         Cache[i].used = 0;
     }
+}
+
+void init_rw(){
+    sem_init(&rw.mutex, 0, 1);
+    sem_init(&rw.w, 0, 1);
+    rw.read_cnt = 0;
 }
