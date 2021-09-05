@@ -6,6 +6,7 @@
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 #define MAX_CACHE MAX_CACHE_SIZE / MAX_OBJECT_SIZE
+#define DEBUGx
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
@@ -23,7 +24,7 @@ typedef struct
 /* LRU CACHE */
 typedef struct
 {
-    int used; 
+    int used;
     char url_key[MAXLINE];
     char content[MAX_OBJECT_SIZE];
 } cache_t;
@@ -39,25 +40,25 @@ typedef struct
     int wait;
 } rwlock_t;
 
-typedef struct{
+typedef struct
+{
     sem_t mutex;
     sem_t w;
     int read_cnt;
 } rw_t;
 
-
-static rw_t rw;
-static rwlock_t rwlock;          /* global read and write lock for access CACHE */
-static cache_t Cache[MAX_CACHE]; /* global CACHE */
+rw_t rw;
+rwlock_t rwlock;          /* global read and write lock for access CACHE */
+cache_t Cache[MAX_CACHE]; /* global CACHE */
 int LRUptr;
 
 void parse_url(char *URL, url_t *url); /* parse the URL and store the info in url*/
 void doit(int connfd);                 /* perform the proxy service and call the cache service*/
 void init_rw();
-void init_rwlock();                    /* initialize the global read/write lock */
-void init_cache();                     /* initialize the global cache */
-int rcache(int connfd, char *url);     /* return 1 if there is content in cache */
-void wcache(char *buf, char *url);     /* store the content from server in buf and the url to the global CACHE */
+void init_rwlock();                /* initialize the global read/write lock */
+void init_cache();                 /* initialize the global cache */
+int rcache(int connfd, char *url); /* return 1 if there is content in cache */
+void wcache(char *buf, char *url); /* store the content from server in buf and the url to the global CACHE */
 void *thread(void *vargp);
 void adjust_request(url_t *u, char *new_http,
                     rio_t *rio); /* http1.1 --> http1.0... */
@@ -127,19 +128,25 @@ void doit(int fd)
     if (strcasecmp(method, "GET"))
     {
         printf(fd, method, "501", "Not Implemented",
-                    "Proxy does not send this method to servers");
+               "Proxy does not send this method to servers");
         return;
     }
 
     /* get the content from cache */
+#ifdef DEBUG
     int x;
-    if ((x=rcache(fd, url_copy)) == 1){
-        printf("cache: %d\n", x);
+    printf("begin to search.\n");
+#endif
+    if ((rcache(fd, url_copy)) == 1)
+    {
+#ifdef DEBUG
+        //printf("cache: %d\n", x);
+#endif
         return;
     }
 
     /* parse and adjust URL from clients */
-    parse_url(url_copy, &u);
+    parse_url(url, &u);
     adjust_request(&u, new_http, &rio); //1.1--1.0...
 
     /* forward request to the target server */
@@ -149,8 +156,8 @@ void doit(int fd)
 
     /* try to cache the received data from server and return them to the client*/
     char cachebuf[MAX_OBJECT_SIZE];
-    size_t n;     //for every rio read
-    int total; //the total number of reading bytes
+    size_t n;  //for every rio read
+    int total=0; //the total number of reading bytes
     while ((n = Rio_readlineb(&serve_rio, buf, MAXLINE)) != 0)
     {
         total += n;
@@ -183,7 +190,7 @@ void parse_url(char *URL, url_t *url)
     //http://www.cmu.edu/hub/index.html
     else
     {
-        char *portptr = strstr(hostptr+2, ":");
+        char *portptr = strstr(hostptr + 2, ":");
         //implict port
         if (portptr == NULL)
         {
@@ -208,33 +215,38 @@ void parse_url(char *URL, url_t *url)
     return;
 }
 
-void adjust_request(url_t* u, char* new_httpdata, rio_t* rio){
-    static const char* Con_hdr = "Connection: close\r\n";
-    static const char* Pcon_hdr = "Proxy-Connection: close\r\n";
+void adjust_request(url_t *u, char *new_httpdata, rio_t *rio)
+{
+    static const char *Con_hdr = "Connection: close\r\n";
+    static const char *Pcon_hdr = "Proxy-Connection: close\r\n";
     char buf[MAXLINE];
-    char Reqline[MAXLINE], host[MAXLINE], endings[MAXLINE]; 
-    sprintf(Reqline, "GET %s HTTP/1.0\r\n", u->file);   
-    while (Rio_readlineb(rio, buf, MAXLINE) > 0){
-        if (strcmp(buf, "\r\n") == 0){
+    char Reqline[MAXLINE], host[MAXLINE], endings[MAXLINE];
+    sprintf(Reqline, "GET %s HTTP/1.0\r\n", u->file);
+    while (Rio_readlineb(rio, buf, MAXLINE) > 0)
+    {
+        if (strcmp(buf, "\r\n") == 0)
+        {
             strcat(endings, "\r\n");
-            break;          
+            break;
         }
-        else if (strncasecmp(buf, "Host:", 5) == 0){
+        else if (strncasecmp(buf, "Host:", 5) == 0)
+        {
             strcpy(host, buf);
         }
-        
-        else if (!strncasecmp(buf, "Connection:", 11) && !strncasecmp(buf, "Proxy_Connection:", 17) &&!strncasecmp(buf, "User-agent:", 11)){
+
+        else if (!strncasecmp(buf, "Connection:", 11) && !strncasecmp(buf, "Proxy_Connection:", 17) && !strncasecmp(buf, "User-agent:", 11))
+        {
             strcat(endings, buf);
         }
     }
-    if (!strlen(host)){
-        sprintf(host, "Host: %s\r\n", u->host); 
+    if (!strlen(host))
+    {
+        sprintf(host, "Host: %s\r\n", u->host);
     }
-    
+
     sprintf(new_httpdata, "%s%s%s%s%s%s", Reqline, host, conn_close, proxy_conn_close, user_agent_hdr, endings);
     return;
 }
-
 
 int rcache(int connfd, char *url)
 {
@@ -262,15 +274,20 @@ int rcache(int connfd, char *url)
     // sem_post(&rwlock.out);
     // return found;
 
-
-    
     sem_wait(&rw.mutex);
-    if (rw.read_cnt==0) sem_wait(&rw.w);
+    if (rw.read_cnt == 0)
+        sem_wait(&rw.w);
     rw.read_cnt++;
     sem_post(&rw.mutex);
     int found = 0;
     for (int i = 0; i < MAX_CACHE; ++i)
     {
+#ifdef DEBUG
+        printf("max cache size is %d.\n", MAX_CACHE);
+        printf("current cache slot is %dth %d %s, %s\n", i, Cache[i].used, Cache[i].url_key, Cache[i].content);
+        printf("%s\n", url);
+        printf("%s\n", Cache[i].url_key);
+#endif
         if (strcmp(url, Cache[i].url_key) == 0)
         {
             found = 1;
@@ -282,7 +299,8 @@ int rcache(int connfd, char *url)
     }
     sem_wait(&rw.mutex);
     rw.read_cnt--;
-    if (rw.read_cnt==0) sem_post(&rw.w);
+    if (rw.read_cnt == 0)
+        sem_post(&rw.w);
     sem_post(&rw.mutex);
     return found;
 }
@@ -312,7 +330,9 @@ void wcache(char *buf, char *url)
     // strcpy(Cache[target].content, buf);
     // sem_post(&rwlock.in);
     // return;
-
+#ifdef DEBUG
+    printf("Begin to write: %s.\n", url);
+#endif
     sem_wait(&rw.w);
     while (Cache[LRUptr].used != 0)
     {
@@ -320,13 +340,20 @@ void wcache(char *buf, char *url)
         LRUptr = (LRUptr + 1) % MAX_CACHE;
     }
     int target = LRUptr;
+
     Cache[target].used = 1;
     strcpy(Cache[target].url_key, url);
     strcpy(Cache[target].content, buf);
+#ifdef DEBUG
+    // printf("target is %d.\n", target);
+    // printf("correct: %s\n",url);
+    // printf("actual: %s\n",Cache[target].url_key);
+    // printf("correct: %s\n",buf);
+    // printf("actual: %s\n",Cache[target].content);
+#endif
 
     sem_post(&rw.w);
     return;
-
 }
 
 void init_rwlock()
@@ -348,7 +375,8 @@ void init_cache()
     }
 }
 
-void init_rw(){
+void init_rw()
+{
     sem_init(&rw.mutex, 0, 1);
     sem_init(&rw.w, 0, 1);
     rw.read_cnt = 0;
