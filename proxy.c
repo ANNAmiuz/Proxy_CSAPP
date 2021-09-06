@@ -58,7 +58,7 @@ void init_rw();
 void init_rwlock();                /* initialize the global read/write lock */
 void init_cache();                 /* initialize the global cache */
 int rcache(int connfd, char *url); /* return 1 if there is content in cache */
-void wcache(char *buf, char *url); /* store the content from server in buf and the url to the global CACHE */
+void wcache(char *buf, char *url, size_t n); /* store the content from server in buf and the url to the global CACHE */
 void *thread(void *vargp);
 void adjust_request(url_t *u, char *new_http,
                     rio_t *rio); /* http1.1 --> http1.0... */
@@ -76,6 +76,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(1);
     }
+    Signal(SIGPIPE,SIG_IGN);
     init_rw();
     init_rwlock();
     init_cache();
@@ -101,7 +102,6 @@ void *thread(void *vargp)
     free(vargp);
     doit(connfd);
     close(connfd);
-    return NULL;
 }
 
 void doit(int fd)
@@ -167,8 +167,9 @@ void doit(int fd)
     }
     Rio_writen(fd, cachebuf, total);
     printf("Successfully send %d bytes to the client.\n", total);
+    fflush(stdout);
     if (total <= MAX_OBJECT_SIZE)
-        wcache(cachebuf, url_copy);
+        wcache(cachebuf, url_copy, total);
     close(servfd);
     return;
 }
@@ -293,7 +294,7 @@ int rcache(int connfd, char *url)
         if (strcmp(url, Cache[i].url_key) == 0)
         {
             found = 1;
-            printf("Read and forward content in CACHE:%s",Cache[i].content);
+            //printf("Read and forward content in CACHE:%s",Cache[i].content);
             Rio_writen(connfd, Cache[i].content, strlen(Cache[i].content));
             printf("proxy send %d bytes to client from cache.\n", strlen(Cache[i].content));
             Cache[i].used = 1;
@@ -308,7 +309,7 @@ int rcache(int connfd, char *url)
     return found;
 }
 
-void wcache(char *buf, char *url)
+void wcache(char *buf, char *url, size_t n)
 {
     // sem_wait(&rwlock.in);
     // sem_post(&rwlock.out);
@@ -346,8 +347,8 @@ void wcache(char *buf, char *url)
 
     Cache[target].used = 1;
     strcpy(Cache[target].url_key, url);
-    strcpy(Cache[target].content, buf);
-    printf("Write content:\n %s to CACHE:\n %s", buf, Cache[target].content);
+    memcpy(Cache[target].content, buf, n);
+    //printf("Write content:\n %s to CACHE:\n %s", buf, Cache[target].content);
 #ifdef DEBUG
     // printf("target is %d.\n", target);
     // printf("correct: %s\n",url);
