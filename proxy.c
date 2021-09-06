@@ -293,6 +293,7 @@ int rcache(int connfd, char *url)
         if (strcmp(url, Cache[i].url_key) == 0)
         {
             found = 1;
+            printf("Read and forward content in CACHE:%s",Cache[i].content);
             Rio_writen(connfd, Cache[i].content, strlen(Cache[i].content));
             printf("proxy send %d bytes to client from cache.\n", strlen(Cache[i].content));
             Cache[i].used = 1;
@@ -346,6 +347,7 @@ void wcache(char *buf, char *url)
     Cache[target].used = 1;
     strcpy(Cache[target].url_key, url);
     strcpy(Cache[target].content, buf);
+    printf("Write content:\n %s to CACHE:\n %s", buf, Cache[target].content);
 #ifdef DEBUG
     // printf("target is %d.\n", target);
     // printf("correct: %s\n",url);
