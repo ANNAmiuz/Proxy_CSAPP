@@ -158,12 +158,14 @@ void doit(int fd)
     char cachebuf[MAX_OBJECT_SIZE];
     size_t n;  //for every rio read
     int total=0; //the total number of reading bytes
-    while ((n = Rio_readlineb(&serve_rio, buf, MAXLINE)) != 0)
+    while ((n = Rio_readnb(&serve_rio, buf, MAX_OBJECT_SIZE)) != 0)
     {
+        //Rio_writen(fd, buf, n); //return to the client
+        //strcat(cachebuf, buf);  //store in the cache
+        memcpy(cachebuf+total, buf, n);
         total += n;
-        Rio_writen(fd, buf, n); //return to the client
-        strcat(cachebuf, buf);  //store in the cache
     }
+    Rio_writen(fd, cachebuf, total);
     printf("Successfully send %d bytes to the client.\n", total);
     if (total <= MAX_OBJECT_SIZE)
         wcache(cachebuf, url_copy);
